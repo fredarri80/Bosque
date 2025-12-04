@@ -1,10 +1,15 @@
-import { Component } from '@angular/core';
+import { Component, ElementRef, ViewChild } from '@angular/core';
 import { ApiService } from '../../services/api.service';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute, RouterModule } from '@angular/router';
 import { NgxPaginationModule } from 'ngx-pagination';
 import { FormsModule } from '@angular/forms';
 import { AfterViewInit } from '@angular/core';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import { AuthserviceService } from '../../auth/authservice.service';
+import Swal from 'sweetalert2';
+import { HasPermissionDirective } from '../../services/has-permission.directive';
 
 declare const bootstrap: any;
 
@@ -25,11 +30,18 @@ interface SiembraRebrote {
 @Component({
   selector: 'app-siembra-rebrote',
   standalone: true,
-  imports: [CommonModule, RouterModule, NgxPaginationModule, FormsModule],
+  imports: [CommonModule, RouterModule, NgxPaginationModule, FormsModule, HasPermissionDirective],
   templateUrl: './siembra-rebrote.component.html',
   styleUrl: './siembra-rebrote.component.css'
 })
 export class SiembraRebroteComponent implements AfterViewInit {
+  @ViewChild('confirmModal') confirmModal!: ElementRef;
+  private modalInstance: any;
+  private pendingDeleteId!: number;
+
+  saveError: string | null = null;
+  saveEditError: string | null = null;
+  username: string = '';
   listSiemReb: any[] = [];
   siembRebFiltrados: any[] = [];
   // valores de filtro
@@ -64,6 +76,7 @@ export class SiembraRebroteComponent implements AfterViewInit {
     anio: new Date().getFullYear(),
     hectarea_usada: null,
     arb_iniciales: null,
+    arb_muertNat: 0,
     arb_cortados: 0,
     dist_siembra: '',
     saldo: null
@@ -72,11 +85,13 @@ export class SiembraRebroteComponent implements AfterViewInit {
   // Edición
   siembraRebroteEditando: SiembraRebrote | null = null;
 
-  constructor(private SiembraRebService: ApiService, private route: ActivatedRoute) { }
-
-
+  constructor(private SiembraRebService: ApiService, private route: ActivatedRoute, private authService: AuthserviceService) { }
 
   ngOnInit(): void {
+    const u = this.authService.getUserInfo();      // string | null
+    this.username = u ?? 'Invitado';
+    console.log('Usuario:', this.username);
+
     const idBosqueParam = this.route.snapshot.paramMap.get('idBosque');
     console.log(idBosqueParam);
     if (idBosqueParam) {
@@ -89,8 +104,8 @@ export class SiembraRebroteComponent implements AfterViewInit {
         this.listSiemReb = exito.map((item: { hectarea_usada: any; saldo: any; }) => ({
           ...item,
           // si viene como string o number, lo convertimos a number y a string con dos decimales
-          hectarea_usada: Number(item.hectarea_usada).toFixed(3),
-          saldo: Number(item.saldo).toFixed(3),
+          hectarea_usada: Number(item.hectarea_usada).toFixed(2),
+          saldo: Number(item.saldo).toFixed(2),
         }));
         this.getSiembraRebFiltrados();
       },
@@ -128,6 +143,7 @@ export class SiembraRebroteComponent implements AfterViewInit {
   }
 
   ngAfterViewInit(): void {
+    this.modalInstance = new bootstrap.Modal(this.confirmModal.nativeElement);
     const tooltipTriggerList = Array.from(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
     tooltipTriggerList.forEach((tooltipTriggerEl: Element) => {
       new bootstrap.Tooltip(tooltipTriggerEl);
@@ -150,7 +166,7 @@ export class SiembraRebroteComponent implements AfterViewInit {
   // método que devuelve los bosques ya filtrados
   getSiembraRebFiltrados() {
     const normalizar = (texto: string) =>
-      texto.toLowerCase().trim().replace(/\s+/g, ' ');
+      texto.toLowerCase().trim().replace(/\s+/g, ' ').replace(/\s*[x×]\s*/g, 'x');;
     return this.siembRebFiltrados = this.listSiemReb.filter(b =>
       (!this.filtroBosque || b.bosque_id == this.filtroBosque)
       && (!this.filtroTipo || b.tipo_id == this.filtroTipo)
@@ -165,24 +181,52 @@ export class SiembraRebroteComponent implements AfterViewInit {
     );
   }
 
-  eliminarSiembraReb(id: number): void {
-    this.SiembraRebService.putSiembraRebroteInactive(id).subscribe(
-      exito => {
-        console.log(exito);
-        this.listSiemReb = this.listSiemReb.filter(siembraRebrote => siembraRebrote.id !== id);
-        this.getSiembraRebFiltrados();
-
-        const totalItems = this.siembRebFiltrados.length;
-        const totalPages = Math.ceil(totalItems / this.itemsPorPagina);
-        if (this.paginaActual > totalPages) {
-          this.paginaActual = totalPages || 1;
-        }
-      },
-      error => {
-        console.log(error);
-      }
-    );
+  // 1) Se llama al hacer clic en el icono de papelera
+  openConfirmModal(id: number) {
+    this.pendingDeleteId = id;
+    this.modalInstance.show();
   }
+
+  // 2) Si el usuario pulsa “Sí”
+  confirmDelete() {
+    this.eliminarSiembraReb(this.pendingDeleteId);
+    this.modalInstance.hide();
+  }
+
+  // 3) Si pulsa “No” o cierra el modal
+  cancelDelete() {
+    this.modalInstance.hide();
+  }
+  eliminarSiembraReb(id: number): void {
+    this.SiembraRebService.countCorteBySR(id).subscribe(count => {
+      if (count > 0) {
+        Swal.fire({
+          icon: 'error',
+          title: 'No se puede eliminar',
+          text: 'Esta Siembra-Rebrote tiene ' + count + ' corte y no se puede eliminar.',
+          confirmButtonColor: '#d33'
+        });
+        return;
+      }
+      this.SiembraRebService.putSiembraRebroteInactive(id).subscribe(
+        exito => {
+          console.log(exito);
+          this.listSiemReb = this.listSiemReb.filter(siembraRebrote => siembraRebrote.id !== id);
+          this.getSiembraRebFiltrados();
+
+          const totalItems = this.siembRebFiltrados.length;
+          const totalPages = Math.ceil(totalItems / this.itemsPorPagina);
+          if (this.paginaActual > totalPages) {
+            this.paginaActual = totalPages || 1;
+          }
+        },
+        error => {
+          console.log(error);
+        }
+      );
+    });
+  }
+
 
   // Editar
   startEdit(id: number) {
@@ -206,6 +250,7 @@ export class SiembraRebroteComponent implements AfterViewInit {
   }
 
   saveEdit() {
+    this.saveEditError = null;
     if (!this.siembraRebroteEditando) return;
     this.SiembraRebService.putSiembraRebrote(this.siembraRebroteEditando.id, this.siembraRebroteEditando).subscribe(
       updated => {
@@ -226,10 +271,32 @@ export class SiembraRebroteComponent implements AfterViewInit {
 
         // 3) Limpia el objeto de edición
         this.siembraRebroteEditando = null;
+        this.saveEditError = null;
       },
       err => {
         console.error('Error al editar:', err);
-        alert('Se ha sobrepasado las has.');
+        let msg = 'Error al guardar los detalles';
+        if (err && err.status === 422) {
+          // tu backend devuelve { message: '...' } o { errors: {...} }
+          if (err.error) {
+            if (typeof err.error === 'string') {
+              msg = err.error;
+            } else if (err.error.message) {
+              msg = err.error.message;
+            } else if (err.error.errors) {
+              // compone mensaje desde array de errores
+              const vals = Object.values(err.error.errors)
+                .flat()
+                .map((v: any) => String(v));
+              msg = vals.join(' - ') || msg;
+            }
+          }
+        } else if (err && err.message) {
+          msg = err.message;
+        }
+
+        // muestra en la UI
+        this.saveEditError = msg;
       }
     );
   }
@@ -247,27 +314,13 @@ export class SiembraRebroteComponent implements AfterViewInit {
   }
 
   onSave() {
-    // // 1) Chequeo de campos vacíos
-    // const f = this.nuevaSiembraRebrote;
-    // if (
-    //   !f.bosque_id ||
-    //   !f.tipo_id ||
-    //   !f.tipo_arbol_id ||
-    //   !f.fecha ||
-    //   f.hectarea_usada === null || f.hectarea_usada === undefined ||
-    //   f.arb_iniciales === null || f.arb_iniciales === undefined ||
-    //   !f.dist_siembra.trim()
-    // ) {
-    //   alert('Por favor completa todos los campos obligatorios antes de guardar.');
-    //   return;
-    // }
-
     // 2) Chequeo de hectáreas disponibles
     const nueva = Number(this.nuevaSiembraRebrote.hectarea_usada);
     const disponibleRestante = this.hectareaDisponible - this.hectareaUsadaAntes;
 
     if (nueva > disponibleRestante) {
-      alert(`Error: Solo quedan ${disponibleRestante.toFixed(2)} ha disponibles. No puede agregar más.`);
+      this.saveError = `Solo quedan ${disponibleRestante.toFixed(2)} ha disponibles. No puede agregar más.`;
+      setTimeout(() => this.saveError = null, 8000);
       return;
     }
     this.SiembraRebService.postSiembraRebrote(this.nuevaSiembraRebrote)
@@ -276,7 +329,7 @@ export class SiembraRebroteComponent implements AfterViewInit {
           // formatear y añadir a la lista
           const nuevo = {
             ...exito,
-            hectarea_usada: Number(exito.hectarea_usada).toFixed(3),
+            hectarea_usada: Number(exito.hectarea_usada).toFixed(2),
             arb_iniciales: Number(exito.arb_iniciales),
             arb_cortados: Number(exito.arb_cortados),
             saldo: Number(exito.arb_iniciales) - Number(exito.arb_cortados),
@@ -306,4 +359,231 @@ export class SiembraRebroteComponent implements AfterViewInit {
       this.nuevaSiembraRebrote.anio = null;
     }
   }
+
+  async exportToPDF() {
+    // Helper: carga una imagen y devuelve dataURL (base64)
+    const loadImageAsDataURL = (url: string): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous'; // importante si la sirves desde otro origen
+        img.onload = () => {
+          // dibuja en canvas para obtener dataURL
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth || img.width;
+          canvas.height = img.naturalHeight || img.height;
+          const ctx = canvas.getContext('2d')!;
+          ctx.drawImage(img, 0, 0);
+          try {
+            const dataUrl = canvas.toDataURL('image/png');
+            resolve(dataUrl);
+          } catch (e) {
+            reject(e);
+          }
+        };
+        img.onerror = (err) => reject(err);
+        // ruta relativa al build -> angular sirve assets desde /assets/...
+        img.src = `/assets/images/bosque.png`;
+      });
+    };
+
+    const doc = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait' });
+    const pageSize = doc.internal.pageSize as any;
+    const pageWidth = pageSize.getWidth();
+    const pageHeight = pageSize.getHeight();
+
+    // Márgenes reducidos para aprovechar el ancho
+    const marginLeft = 20;
+    const marginRight = 20;
+    const usableWidth = pageWidth - marginLeft - marginRight;
+
+    const headerY = 60;
+    const username = this.username ?? 'Invitado';
+    const generatedAt = new Date().toLocaleString('es-ES');
+
+    const rows = this.siembRebFiltrados.map(item => ({
+      bosque_id: this.getBosqueNombre(item.bosque_id),
+      tipo_id: this.getTipoNombre(item.tipo_id),
+      tipo_arbol_id: this.getTipoArbolNombre(item.tipo_arbol_id),
+      fecha: item.fecha ? new Date(item.fecha).toLocaleDateString() : '',
+      anio: item.anio,
+      hectarea_usada: item.hectarea_usada,
+      arb_iniciales: item.arb_iniciales ?? 0,
+      arb_raleados: item.arb_raleados ?? 0,
+      arb_cortados: item.arb_cortados ?? 0,
+      dist_siembra: item.dist_siembra,
+      saldo: item.saldo ?? 0
+    }));
+
+    const columns = [
+      { header: 'Bosque', dataKey: 'bosque_id' },
+      { header: 'Tipo', dataKey: 'tipo_id' },
+      { header: 'Tipo Árbol', dataKey: 'tipo_arbol_id' },
+      { header: 'Fecha', dataKey: 'fecha' },
+      { header: 'Año', dataKey: 'anio' },
+      { header: 'Hectárea Usada', dataKey: 'hectarea_usada' },
+      { header: 'Árboles Iniciales', dataKey: 'arb_iniciales' },
+      { header: 'Árboles Raleados', dataKey: 'arb_raleados' },
+      { header: 'Árboles Cortados', dataKey: 'arb_cortados' },
+      { header: 'Distancia Siembra', dataKey: 'dist_siembra' },
+      { header: 'Saldo', dataKey: 'saldo' }
+    ];
+
+    // --- Cálculo total de hectáreas y árboles ---
+    const sumInteger = (v: any) => {
+      if (v === null || v === undefined) return 0;
+      const s = String(v).replace(/\s/g, '').replace(',', '.');
+      return Math.round(Number(s) || 0);
+    };
+
+    const totalHectareas = rows.reduce((s, r) => s + (Number(String(r.hectarea_usada || 0).replace(',', '.')) || 0), 0);
+    const totalIniciales = rows.reduce((s, r) => s + sumInteger(r.arb_iniciales), 0);
+    const totalRaleados = rows.reduce((s, r) => s + sumInteger(r.arb_raleados), 0);
+    const totalCortados = rows.reduce((s, r) => s + sumInteger(r.arb_cortados), 0);
+
+    const fmtInteger = (n: number) => new Intl.NumberFormat('es-ES', { minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(n);
+    const fmtDecimal = (n: number) => new Intl.NumberFormat('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+
+    const totalHectareasFmt = fmtDecimal(totalHectareas);
+    const totalInicialesFmt = fmtInteger(totalIniciales);
+    const totalRaleadosFmt = fmtInteger(totalRaleados);
+    const totalCortadosFmt = fmtInteger(totalCortados);
+
+    // Carga la imagen antes de dibujar el header/tablas
+    let logoDataUrl: string | null = null;
+    try {
+      logoDataUrl = await loadImageAsDataURL('/assets/images/bosque.png');
+    } catch (e) {
+      console.warn('No se pudo cargar logo para el PDF:', e);
+      logoDataUrl = null;
+    }
+
+    const drawHeader = (data: any) => {
+      if (logoDataUrl) {
+        const desiredWidth = 60;
+        const img = new Image();
+        img.src = logoDataUrl;
+        const ratio = (img.naturalHeight && img.naturalWidth) ? (img.naturalHeight / img.naturalWidth) : 0.5;
+        const desiredHeight = ratio ? desiredWidth * ratio : 30;
+        doc.addImage(logoDataUrl, 'PNG', marginLeft, 8, desiredWidth, desiredHeight);
+      }
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Reporte de Siembras/Rebrotes', marginLeft, 50);
+
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      const gen = ` ${generatedAt}`;
+      const usr = ` ${username}`;
+      doc.text(gen, pageWidth - marginRight - doc.getTextWidth(gen), 14);
+      doc.text(usr, pageWidth - marginRight - doc.getTextWidth(usr), 28);
+
+      doc.setDrawColor(200);
+      doc.setLineWidth(0.5);
+      doc.line(marginLeft, headerY, pageWidth - marginRight, headerY);
+    };
+
+    // Construye body como array de arrays (autoTable fácil)
+    const body = rows.map(r => columns.map((c) => (r as any)[c.dataKey]));
+
+    autoTable(doc, {
+      startY: headerY + 22,
+      head: [columns.map(c => c.header)],
+      body: body,
+      margin: { left: marginLeft, right: marginRight, top: headerY + 6 },
+      styles: {
+        fontSize: 10,
+        cellPadding: 3,
+        overflow: 'linebreak',
+        halign: 'right',
+        valign: 'middle',
+      },
+      headStyles: { fillColor: [34, 139, 34], textColor: 255, halign: 'center' },
+      tableWidth: usableWidth,
+      columnStyles: {
+        0: { halign: 'left' },
+        1: { halign: 'left' },
+        2: { halign: 'center' },
+        3: { halign: 'center' },
+        4: { halign: 'right' },
+        5: { halign: 'right' },
+        6: { halign: 'right' },
+        7: { halign: 'right' },
+        8: { halign: 'right' },
+        9: { halign: 'center' },
+        10: { halign: 'right' }
+      },
+      didDrawPage: (data) => {
+        const page = data.pageNumber;
+        const pageText = `Página ${page}`;
+        doc.setFontSize(9);
+        const xRight = pageWidth - marginRight - doc.getTextWidth(pageText);
+        doc.text(pageText, xRight, pageHeight - 20);
+        doc.text('', marginLeft, pageHeight - 20);
+        drawHeader(data);
+      },
+      showHead: 'everyPage'
+    });
+
+    // --- DIBUJAR BLOQUE DE TOTALES COMO LÍNEAS DE TEXTO ---
+    // Obtener la posición final de la tabla
+    const lastTable = (doc as any).lastAutoTable;
+    const lastY = lastTable ? lastTable.finalY : (pageHeight - 60);
+    const lastPage = (doc as any).internal.getNumberOfPages ? (doc as any).internal.getNumberOfPages() : 1;
+
+    // Ir a la última página
+    doc.setPage(lastPage);
+
+    // Posición inicial para el bloque de totales
+    let y = lastY + 12;
+    const lineHeight = 14;
+
+    // Número de líneas a mostrar
+    const totalsLines = [
+      { label: '', value: '' },
+      { label: 'Total Hectáreas Usadas:', value: totalHectareasFmt },
+      { label: 'Total Árboles Iniciales:', value: totalInicialesFmt },
+      { label: 'Total Árboles Raleados:', value: totalRaleadosFmt },
+      { label: 'Total Árboles Cortados:', value: totalCortadosFmt }
+    ];
+
+    // Si no cabe en la página actual, crear una nueva
+    const neededHeight = totalsLines.length * lineHeight + 10;
+    if (y + neededHeight > pageHeight - 30) {
+      doc.addPage();
+      const newPage = (doc as any).internal.getNumberOfPages();
+      drawHeader({ pageNumber: newPage });
+      doc.setPage(newPage);
+      y = headerY + 22;
+    }
+
+    // Estilos: etiqueta a la izquierda (gris), valor a la derecha (negrita)
+    const xLeft = marginLeft;
+    const xRightBase = pageWidth - marginRight;
+
+    for (const item of totalsLines) {
+      // etiqueta en gris
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
+      doc.setTextColor(100); // gris suave
+      doc.text(item.label, xLeft, y);
+
+      // valor en negrita y negro alineado a la derecha
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(0);
+      const valueText = String(item.value);
+      const xValue = xRightBase - doc.getTextWidth(valueText);
+      doc.text(valueText, xValue, y);
+
+      y += lineHeight;
+    }
+
+    // opcional: línea separadora después de los totales
+    doc.setDrawColor(200);
+    doc.setLineWidth(0.5);
+    doc.line(marginLeft, y + 4, pageWidth - marginRight, y + 4);
+
+    const filename = `siembra-rebrote.pdf`;
+    doc.save(filename);
+  }
+
 }

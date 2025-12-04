@@ -1,0 +1,1468 @@
+import { Component, ElementRef, ViewChild } from '@angular/core';
+import { ApiService } from '../../services/api.service';
+import { CommonModule } from '@angular/common';
+import { ActivatedRoute, RouterModule } from '@angular/router';
+import { NgxPaginationModule } from 'ngx-pagination';
+import { FormsModule } from '@angular/forms';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import { forkJoin } from 'rxjs';
+import { AuthserviceService } from '../../auth/authservice.service';
+import { HasPermissionDirective } from '../../services/has-permission.directive';
+
+declare const bootstrap: any;
+
+interface Corte {
+  id: number,
+  bosque_id: number,
+  contrato_id: number,
+  raleo_tipo_id: number,
+  siembra_rebrote_id: number,
+  //sello_id: number,
+  fecha_embarque: string,
+  cant_arboles: number,
+  numero_viaje: number,
+  numero_envio: number,
+  placa_carro: string,
+  contenedor: string,
+  naviera: string,
+  supervisor: string,
+  sello_empresa: string,
+  sello_rastreo: string,
+  sello_inspeccion: string,
+}
+interface detCorte {
+  cabecera_corte_id: number,
+  trozas: number,
+  circ_bruta: number,
+  circ_neta: number,
+  largo_bruto: number,
+  largo_neto: number,
+  m_cubica: number,
+  valor_mcubico: number,
+  valor_troza: number,
+  bosque_id: number,
+  siembra_rebrote_id: number,
+}
+
+@Component({
+  selector: 'app-corte',
+  standalone: true,
+  imports: [CommonModule, RouterModule, NgxPaginationModule, FormsModule, HasPermissionDirective],
+  templateUrl: './corte.component.html',
+  styleUrl: './corte.component.css'
+})
+export class CorteComponent {
+  @ViewChild('confirmModal') confirmModal!: ElementRef;
+  @ViewChild('confirmModalAgreem') confirmModalAgreem!: ElementRef;
+
+  private modalInstance: any;
+  private pendingDeleteId!: number;
+  private modalInstanceAgreem: any;
+  private pendingCloseAgreemId!: number;
+
+  nuevoDetCorte: detCorte[] = [{
+    cabecera_corte_id: 0,
+    trozas: 0,
+    circ_bruta: 0,
+    circ_neta: 0,
+    largo_bruto: 0,
+    largo_neto: 0,
+    m_cubica: 0,
+    valor_mcubico: 0,
+    valor_troza: 0,
+    bosque_id: 0,
+    siembra_rebrote_id: 0,
+  }];
+
+  nuevoCorte: any = {
+    bosque_id: null,
+    contrato_id: 0,
+    raleo_tipo_id: 7,
+    siembra_rebrote_id: null,
+    //sello_id: 0,
+    fecha_embarque: '',
+    cant_arboles: 0,
+    numero_viaje: null,
+    numero_envio: null,
+    placa_carro: '',
+    contenedor: '',
+    naviera: '',
+    supervisor: '',
+    sello_empresa: '',
+    sello_rastreo: '',
+    sello_inspeccion: ''
+  };
+
+  SaldoDisponible = 0;
+  distinctBS: any[] = [];
+
+  listDetCortes: any[] = [];
+  selectedCorteId: number | null = null;
+  selectedBosqueId: number | null = null;
+  selectedSiembraId: number | null = null;
+  selectedCorte: any = null;
+  selectedFile: File | null = null;
+  selectedFileName: string | null = null;
+  //selectedContractForCorte: number | null = null;
+  isContractLocked = false;
+  selectedRaleo: number | null = null;
+  isUploading = false;
+  listCorte: any[] = [];
+  cortesFiltrados: any[] = [];
+
+  saveCantError: string | null = null;
+  saveDetError: string | null = null;
+  filtroSiembraRebrote: number | null = null;
+  filtroSR: string = '';
+  filtroBosque: number | null = null;
+  filtroContrato: number | null = null;
+  filtroRaleoTipo: number | null = null;
+  filtroSelloTipo: number | null = null;
+  filtroFecha: Date | null = null;
+  filtroNaviera: string = '';
+  filtroNumeroViaje: number | null = null;
+  filtroNumeroEnvio: number | null = null;
+
+  // paginación
+  paginaActual: number = 1;
+  itemsPorPagina: number = 15;
+
+  //Totales
+  totalTrozas: number = 0;
+  totalCircBruta: number = 0;
+  totalCircNeta: number = 0
+  totalLargoBruto: number = 0;
+  totalLargoNeto: number = 0
+  totalMCubica: number = 0;
+  totalValorMCubico: number = 0
+  totalValorTroza: number = 0;
+  corteValorTroza: Record<number, number> = {};
+
+  username: string = '';
+  // Datos para los select
+  bosques: any[] = [];
+  contrato: any[] = [];
+  raleoTipo: any[] = [];
+  siemReb: any[] = [];
+  //selloTipo: any[] = [];
+  tipoArbol: any[] = [];
+  siembTipo: any[] = [];
+  cliente: any[] = [];
+  corteEditando: Corte | null = null;
+  siemRebFiltered: any[] = [];
+
+  constructor(private corteService: ApiService, private route: ActivatedRoute, private authService: AuthserviceService) { }
+
+  ngOnInit(): void {
+    const u = this.authService.getUserInfo();      // string | null
+    this.username = u ?? 'Invitado';
+    console.log('Usuario:', this.username);
+
+    const idSiemRebParam = this.route.snapshot.paramMap.get('idSiembraRebrote');
+    const idBosqueParam = this.route.snapshot.paramMap.get('bosqueId');
+    const idContratoParam = this.route.snapshot.paramMap.get('contratoId');
+    console.log('Ruta', idSiemRebParam, idBosqueParam);
+    if (idSiemRebParam) {
+      this.filtroSiembraRebrote = +idSiemRebParam; // lo conviertes a número y aplicas como filtro
+      console.log('filtroSiembraRebrote', this.filtroSiembraRebrote);
+    }
+    if (idBosqueParam) {
+      this.filtroBosque = +idBosqueParam;
+      console.log('filtroBosque', this.filtroBosque)
+    }
+    if (idContratoParam) {
+      this.filtroContrato = +idContratoParam;
+      console.log('filtroContrato', this.filtroContrato)
+    }
+
+    this.corteService.getCabeceraCortes().subscribe(
+      exito => {
+        console.log('corte', exito);
+        this.listCorte = exito
+        this.getCortesFiltrados();
+      },
+      error => {
+        console.log(error);
+      }
+    );
+    this.corteService.getBosques().subscribe(
+      exito => {
+        this.bosques = exito;
+      },
+      error => {
+        console.log(error);
+      }
+    );
+    this.corteService.getClientes().subscribe(
+      exito => {
+        console.log('cliente', exito);
+        this.cliente = exito;
+      },
+      error => {
+        console.log(error);
+      }
+    );
+    this.corteService.getContratos().subscribe(
+      exito => {
+        console.log('contratos', exito);
+        this.contrato = exito;
+      },
+      error => {
+        console.log(error);
+      }
+    );
+    this.corteService.getTipoArbol('raleoTipo').subscribe(
+      exito => {
+        console.log('raleo', exito);
+        this.raleoTipo = exito;
+      },
+      error => {
+        console.log(error);
+      }
+    );
+    this.corteService.getTipoArbol('siembraRebrote').subscribe(
+      exito => {
+        console.log('siembraRebrote', exito);
+        this.siembTipo = exito;
+      },
+      error => {
+        console.log(error);
+      }
+    );
+    this.corteService.getSiembraRebrotes().subscribe(
+      exito => {
+        this.siemReb = exito;
+      },
+      error => {
+        console.log(error);
+      }
+    );
+    this.corteService.getTipoArbol('tipoArbol').subscribe(
+      exito => {
+        console.log(exito);
+        this.tipoArbol = exito;
+      },
+      error => {
+        console.log(error);
+      }
+    );
+    this.corteService.getValorTrozaAll2().subscribe(map => {
+      this.corteValorTroza = {};
+      Object.entries(map || {}).forEach(([k, v]) => {
+        this.corteValorTroza[Number(k)] = Number(v) || 0;
+      });
+
+      // (opcional) asegurar entradas por defecto para cortes cargados
+      (this.listCorte || []).forEach((c: any) => {
+        const id = Number(c.id);
+        if (this.corteValorTroza[id] === undefined) this.corteValorTroza[id] = 0;
+      });
+    }, err => {
+      console.error('No pude obtener valorTrozaAll:', err);
+    });
+  }
+
+  ngAfterViewInit(): void {
+    this.modalInstance = new bootstrap.Modal(this.confirmModal.nativeElement);
+    this.modalInstanceAgreem = new bootstrap.Modal(this.confirmModalAgreem.nativeElement);
+    const tooltipTriggerList = Array.from(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+    tooltipTriggerList.forEach((tooltipTriggerEl: Element) => {
+      new bootstrap.Tooltip(tooltipTriggerEl);
+    });
+  }
+
+  onBosqueChange(bosqueId: any) {
+    // convertir a number si viene string
+    const id = bosqueId === null || bosqueId === undefined ? null : Number(bosqueId);
+
+    // guardar en nuevoCorte (ngModel ya lo hizo, pero por seguridad)
+    this.nuevoCorte.bosque_id = id;
+
+    // actualizar lista filtrada
+    this.updateSiemRebFiltered(id);
+  }
+
+  updateSiemRebFiltered(bosqueId: number | null) {
+    if (bosqueId === null || bosqueId === undefined) {
+      this.siemRebFiltered = [];
+      return;
+    }
+
+    // Buscar el/los id(s) del parametro cuyo nombre es "Teca" dentro de tipoArbol
+    const tecaIds = (this.tipoArbol || [])
+      .filter((t: any) => (t.nombre || '').toString().trim().toLowerCase() === 'teca')
+      .map((t: any) => Number(t.id));
+
+    // Si no hay definiciones de "Teca" aún, dejamos vacío (evita mostrar siembras de otros tipos)
+    if (tecaIds.length === 0) {
+      this.siemRebFiltered = [];
+      return;
+    }
+
+    this.siemRebFiltered = (this.siemReb || []).filter(s => {
+      const sBosqueId = s.bosque_id ?? s.idbosque ?? s.bosque?.id ?? null;
+      const tipoArbolId = s.tipo_arbol_id ?? s.tipo_id ?? null; // intenta ambas claves por robustez
+      return sBosqueId !== null
+        && Number(sBosqueId) === Number(bosqueId)
+        && tipoArbolId !== null
+        && tecaIds.includes(Number(tipoArbolId));
+    });
+  }
+
+  // cuando cambias el bosque global -> propaga a todas las filas
+  onSelectedBosqueChange(bosqueId: number | null) {
+    const id = bosqueId === null || bosqueId === undefined ? null : Number(bosqueId);
+
+    // guardar en nuevoCorte (ngModel ya lo hizo, pero por seguridad)
+    //this.nuevoCorte.bosque_id = id;
+
+    // actualizar lista filtrada
+    this.updateSiemRebFiltered(id);
+
+    this.selectedBosqueId = bosqueId;
+    this.nuevoDetCorte.forEach(d => d.bosque_id = bosqueId !== null ? bosqueId : 0);
+  }
+
+  // cuando cambias la siembra global -> propaga a todas las filas
+  onSelectedSiembraChange(val: number | null) {
+    this.selectedSiembraId = val;
+    this.nuevoDetCorte.forEach(d => d.siembra_rebrote_id = val !== null ? val : 0);
+  }
+
+  getBosqueId(bosqueId: string) {
+    const bosques = this.bosques?.find((b: any) => b.id == bosqueId);
+    return bosques ? bosques.nombre : '';
+  }
+  getContratoId(contratoId: string) {
+    const contratos = this.contrato?.find((b: any) => b.id == contratoId);
+    return contratos ? contratos.cliente_id : '';
+  }
+  getContrId(contratoId: string) {
+    const contratos = this.contrato?.find((b: any) => b.id == contratoId);
+    return contratos ? contratos.id : '';
+  }
+  getClienteId(clienteId: string) {
+    const client = this.cliente?.find((b: any) => b.idcliente == clienteId);
+    return client ? client.NombreComercial : '';
+  }
+  getContratoAnio(contratoId: string) {
+    const contratos = this.contrato?.find((b: any) => b.id == contratoId);
+    return contratos ? contratos.anio : '';
+  }
+  // getSelloTipoId(selloTipoId: string) {
+  //   const selloTipos = this.selloTipo?.find((b: any) => b.id == selloTipoId);
+  //   return selloTipos ? selloTipos.nombre : '';
+  // }
+  getRaleoId(raleoTipoId: string) {
+    const raleoTipos = this.raleoTipo?.find((b: any) => b.id == raleoTipoId);
+    return raleoTipos ? raleoTipos.nombre : '';
+  }
+  getSiemRebId(siemRebId: string) {
+    const siembraRebrote = this.siemReb?.find((b: any) => b.id == siemRebId);
+    return siembraRebrote ? siembraRebrote.tipo_id : '';
+  }
+  getSiemRebAnio(siemRebId: string) {
+    const siembraRebrote = this.siemReb?.find((b: any) => b.id == siemRebId);
+    return siembraRebrote ? siembraRebrote.anio : '';
+  }
+  getSiemRebBosque(siemRebId: string) {
+    const siembraRebrote = this.siemReb?.find((b: any) => b.id == siemRebId);
+    return siembraRebrote ? siembraRebrote.bosque_id : '';
+  }
+  getSiemRebTipo(siemRebId: string) {
+    const siembraRebroteT = this.siembTipo?.find((b: any) => b.id == siemRebId);
+    return siembraRebroteT ? siembraRebroteT.nombre : '';
+  }
+
+  getCortesFiltrados() {
+    this.cortesFiltrados = (this.listCorte || []).filter(b => {
+      // normalizar campos que pueden ser number | string | array
+      const bosqueIds = this._asNumberArray(b.bosque_id);
+      const siembraIds = this._asNumberArray(b.siembra_rebrote_id);
+
+      // filtro por siembra_rebrote (si hay filtro)
+      if (this.filtroSiembraRebrote) {
+        if (!siembraIds.includes(Number(this.filtroSiembraRebrote))) return false;
+      }
+
+      // filtro por bosque (si hay filtro)
+      if (this.filtroBosque) {
+        if (!bosqueIds.includes(Number(this.filtroBosque))) return false;
+      }
+
+      // filtro por texto (siempre convierte los ids a string "25, 26" para búsqueda)
+      if (this.filtroSR) {
+        const siemStr = siembraIds.join(', ');
+        if (!siemStr.toLowerCase().includes(this.filtroSR.toLowerCase())) return false;
+      }
+
+      // resto de filtros existentes (sin cambios lógicos)
+      if (this.filtroContrato && b.contrato_id != this.filtroContrato) return false;
+      if (this.filtroRaleoTipo && b.raleo_tipo_id != this.filtroRaleoTipo) return false;
+      if (this.filtroNumeroViaje && b.numero_viaje != this.filtroNumeroViaje) return false;
+      if (this.filtroNumeroEnvio && b.numero_envio != this.filtroNumeroEnvio) return false;
+      if (this.filtroNaviera && !(b.naviera ?? '').toString().toLowerCase().includes(this.filtroNaviera.toLowerCase())) return false;
+      if (this.filtroFecha && new Date(b.fecha_embarque).toDateString() !== new Date(this.filtroFecha).toDateString()) return false;
+
+      return true;
+    });
+
+    return this.cortesFiltrados;
+  }
+
+  // helper que normaliza number | "10,11" | '["10",11]' | [10,11] -> number[]
+  private _asNumberArray(val: any): number[] {
+    if (val === null || typeof val === 'undefined' || val === '') return [];
+
+    // ya es array
+    if (Array.isArray(val)) {
+      return Array.from(new Set(val.map(v => Number(v)).filter(n => Number.isFinite(n))));
+    }
+
+    // si viene como JSON string de un array: '["10", "11"]'
+    if (typeof val === 'string') {
+      const s = val.trim();
+
+      // intento parsear JSON por si backend mandó stringified array
+      if ((s.startsWith('[') && s.endsWith(']'))) {
+        try {
+          const parsed = JSON.parse(s);
+          if (Array.isArray(parsed)) {
+            return this._asNumberArray(parsed);
+          }
+        } catch { /* ignore parse error */ }
+      }
+
+      // si es cadena tipo "10, 11" o "10" -> split por comas
+      const parts = s.split(',').map(p => p.trim()).filter(p => p !== '');
+      const nums = parts.map(p => Number(p)).filter(n => Number.isFinite(n));
+      return Array.from(new Set(nums));
+    }
+
+    // si es número u otro tipo convertible
+    const maybeNum = Number(val);
+    return Number.isFinite(maybeNum) ? [maybeNum] : [];
+  }
+
+
+  // 1) Se llama al hacer clic en el icono de papelera
+  openConfirmModal(id: number) {
+    this.pendingDeleteId = id;
+    this.modalInstance.show();
+  }
+
+  // 2) Si el usuario pulsa “Sí”
+  confirmDelete() {
+    this.eliminarCorte(this.pendingDeleteId);
+    this.modalInstance.hide();
+  }
+
+  // 3) Si pulsa “No” o cierra el modal
+  cancelDelete() {
+    this.modalInstance.hide();
+  }
+
+  eliminarCorte(id: number): void {
+    this.corteService.putCabeceraCorteInactive(id).subscribe(
+      exito => {
+        console.log(exito);
+        this.listCorte = this.listCorte.filter(corte => corte.id !== id);
+        this.getCortesFiltrados();
+        const totalItems = this.cortesFiltrados.length;
+        const totalPages = Math.ceil(totalItems / this.itemsPorPagina);
+        if (this.paginaActual > totalPages) {
+          this.paginaActual = totalPages || 1;
+        }
+      },
+      error => {
+        console.log(error);
+      }
+    );
+  }
+
+  // Editar
+  startEdit(id: number) {
+    const original = this.listCorte.find(s => s.id === id);
+    if (!original) return;
+
+    // Crear una copia para editar
+    this.corteEditando = {
+      ...original
+    };
+    const modal = new bootstrap.Modal(document.getElementById('editarModal'));
+    modal.show();
+  }
+
+  // Cancelar edición
+  cancelEdit() {
+    this.corteEditando = null;
+  }
+
+  saveEdit() {
+    if (!this.corteEditando) return;
+    this.corteService.putCabeceraCorte(this.corteEditando.id, this.corteEditando).subscribe(
+      updated => {
+        const idx = this.listCorte.findIndex(s => s.id === updated.id);
+        if (idx !== -1) this.listCorte[idx] = updated;
+        this.listCorte[idx] = {
+          ...this.listCorte[idx]
+        };
+        this.getCortesFiltrados();
+
+        // 2) Cierra el modal manualmente
+        const modalEl = document.getElementById('editarModal')!;
+        const modalInstance = bootstrap.Modal.getInstance(modalEl);
+        modalInstance?.hide();
+
+        // 3) Limpia el objeto de edición
+        this.corteEditando = null;
+      },
+      err => {
+        console.error('Error al editar:', err);
+      }
+    );
+  }
+
+  onSave() {
+    this.saveCantError = null;
+    console.log('Nuevo corte:', this.nuevoCorte);
+    this.corteService.postCabeceraCorte(this.nuevoCorte)
+      .subscribe({
+        next: exito => {
+          // formatear y añadir a la lista
+          const nuevo = {
+            ...exito
+          };
+          this.listCorte.push(nuevo);
+          this.getCortesFiltrados();
+          // cerrar el modal manualmente
+          const modalEl = document.getElementById('miModal')!;
+          const modal = bootstrap.Modal.getInstance(modalEl);
+          modal?.hide();
+          this.saveCantError = null;
+        },
+        error: err => {
+          let msg = 'Error al guardar los detalles';
+          if (err && err.status === 422) {
+            if (err.error) {
+              if (typeof err.error === 'string') {
+                msg = err.error;
+              } else if (err.error.message) {
+                msg = err.error.message;
+              } else if (err.error.errors) {
+                // compone mensaje desde array de errores
+                const vals = Object.values(err.error.errors)
+                  .flat()
+                  .map((v: any) => String(v));
+                msg = vals.join(' - ') || msg;
+              }
+            }
+          } else if (err && err.message) {
+            msg = err.message;
+          }
+
+          // muestra en la UI
+          this.saveCantError = msg;
+
+          // opcional: desplazar scroll al top del modal para que se vea el alert
+          try {
+            const modalBody = document.querySelector('#miModal .modal-body') as HTMLElement | null;
+            if (modalBody) modalBody.scrollTop = 0;
+          } catch { }
+        }
+      });
+  }
+
+  //--------------------------------------------
+  openCloseAModal(id: number) {
+    this.pendingCloseAgreemId = id;
+    this.modalInstanceAgreem.show();
+  }
+
+  // 2) Si el usuario pulsa “Sí”
+  confirmCloseA() {
+    this.closeEstado(this.pendingCloseAgreemId);
+    this.modalInstanceAgreem.hide();
+  }
+
+  // 3) Si pulsa “No” o cierra el modal
+  cancelCloseA() {
+    this.modalInstanceAgreem.hide();
+  }
+
+  closeEstado(id: number): void {
+    this.corteService.putCorteClose(id).subscribe(
+      exito => {
+        console.log(exito);
+        const corte = this.listCorte.find(c => c.id === id);
+        if (corte) {
+          corte.estado = 'C';
+        }
+        this.getCortesFiltrados();
+        const totalItems = this.cortesFiltrados.length;
+        const totalPages = Math.ceil(totalItems / this.itemsPorPagina);
+        if (this.paginaActual > totalPages) {
+          this.paginaActual = totalPages || 1;
+        }
+      },
+      error => {
+        console.log(error);
+      }
+    );
+  }
+
+  onRaleoChange(raleoId: any) {
+    // normaliza a number o null
+    const id = raleoId === null || raleoId === undefined || raleoId === '' ? null : Number(raleoId);
+    this.selectedRaleo = id;
+
+    // sincroniza con nuevoCorte si usas ese objeto al guardar
+    this.nuevoCorte = {
+      ...this.nuevoCorte,
+      raleo_tipo_id: id
+    };
+    // Si el raleo NO es comercial y ya había un contrato seleccionado, lo limpiamos
+    if (this.isRaleoComercial()) {
+      this.nuevoCorte.bosque_id = null;
+      this.nuevoCorte.siembra_rebrote_id = null;
+      // limpiar dropdown filtrado para que no muestre opciones residuales
+      this.siemRebFiltered = [];
+    } else {
+      // Si NO es comercial -> limpiar contrato porque no aplica
+      this.nuevoCorte.contrato_id = null;
+    }
+  }
+
+  isRaleoComercial(): boolean {
+    const id = Number(this.selectedRaleo ?? this.nuevoCorte?.raleo_tipo_id);
+    if (!id) return false;
+
+    const r = (this.raleoTipo || []).find((x: any) => Number(x.id) === Number(id));
+    if (!r) return false;
+
+    const COMMERCIAL_KNOWN_IDS = [7]; // añade más ids si aplica
+    if (COMMERCIAL_KNOWN_IDS.includes(Number(r.id))) return true;
+    return false;
+  }
+
+  //--------------DETALLE CORTE---------------------
+
+  openDetailModal(cabecera_corte_id: number) {
+    this.selectedCorteId = cabecera_corte_id;
+    console.log('Corte ID seleccionado:', this.selectedCorteId);
+
+    // usamos forkJoin para pedir detalle, cabecera y las combinaciones únicas
+    forkJoin({
+      detalle: this.corteService.getDetalleCorte(cabecera_corte_id),
+      cab: this.corteService.getCabeceraCorte(cabecera_corte_id),
+      pares: this.corteService.getDistinctBSbyCab(cabecera_corte_id)
+    }).subscribe({
+      next: ({ detalle, cab, pares }) => {
+        // detalles (tabla)
+        this.listDetCortes = Array.isArray(detalle) ? detalle : [detalle];
+        this.totalTrozas = this.listDetCortes.length;
+        this.totalCircBruta = this.listDetCortes.reduce((acc, curr) => acc + (Number(curr.circ_bruta) || 0), 0);
+        this.totalCircNeta = this.listDetCortes.reduce((acc, curr) => acc + (Number(curr.circ_neta) || 0), 0);
+        this.totalLargoBruto = this.listDetCortes.reduce((acc, curr) => acc + (Number(curr.largo_bruto) || 0), 0);
+        this.totalLargoNeto = this.listDetCortes.reduce((acc, curr) => acc + (Number(curr.largo_neto) || 0), 0);
+        this.totalMCubica = this.listDetCortes.reduce((acc, curr) => acc + (Number(curr.m_cubica) || 0), 0);
+        this.totalValorMCubico = this.listDetCortes.reduce((acc, curr) => acc + (Number(curr.valor_mcubico) || 0), 0);
+        this.totalValorTroza = this.listDetCortes.reduce((acc, curr) => acc + (Number(curr.valor_troza) || 0), 0);
+
+        // cabecera
+        this.selectedCorte = cab || null;
+
+        // pares únicos bosque/siembra (esperamos [{ bosque_id, siembra_rebrote_id }, ...])
+        this.distinctBS = Array.isArray(pares) ? pares : (pares ? [pares] : []);
+
+        // abrir modal
+        const modalEl = document.getElementById('verdetModal')!;
+        const modal = new bootstrap.Modal(modalEl);
+        modal.show();
+      },
+      error: err => {
+        console.error('Error cargando detalles/cabecera/pares únicos:', err);
+        alert('Error al cargar los datos del corte. Revisa la consola.');
+      }
+    });
+  }
+
+  closeDetailModal() {
+    const modalEl = document.getElementById('verdetModal')!;
+    const modal = new bootstrap.Modal(modalEl);
+    modal.hide();
+    this.selectedCorteId = null; // Limpiar el ID 
+  }
+
+  openDetailModal2(corteId: number) {
+    this.selectedCorteId = corteId;
+    this.selectedCorte = null;
+    this.nuevoDetCorte = []; // opcional reset
+    this.selectedBosqueId = null;
+    this.selectedSiembraId = null;
+
+    forkJoin({
+      count: this.corteService.countDetalleCorte(corteId),   // debe devolver { count: N }
+      cab: this.corteService.getCabeceraCorte(corteId)       // debe devolver la cabecera (con relaciones)
+    }).subscribe({
+      next: ({ count, cab }) => {
+        const existingCount = (count && typeof count.count === 'number') ? count.count : 0;
+
+        // conservar cabecera para mostrar en el modal
+        this.selectedCorte = cab || null;
+
+        // inicializo la primera fila justo en existingCount + 1
+        this.nuevoDetCorte = [{
+          cabecera_corte_id: corteId,
+          trozas: existingCount + 1,
+          circ_bruta: 0,
+          circ_neta: 0,
+          largo_bruto: 0,
+          largo_neto: 0,
+          m_cubica: 0,
+          valor_mcubico: 0,
+          valor_troza: 0,
+          bosque_id: 0,
+          siembra_rebrote_id: 0,
+        }];
+
+        const modalEl = document.getElementById('detModal')!;
+        new bootstrap.Modal(modalEl).show();
+      },
+      error: err => {
+        console.error('No se pudo obtener count o cabecera:', err);
+        // fallback: intenta solo el count (si quieres)
+        this.corteService.countDetalleCorte(corteId).subscribe(resp => {
+          const existingCount = resp.count || 0;
+          this.nuevoDetCorte = [{
+            cabecera_corte_id: corteId,
+            trozas: existingCount + 1,
+            circ_bruta: 0,
+            circ_neta: 0,
+            largo_bruto: 0,
+            largo_neto: 0,
+            m_cubica: 0,
+            valor_mcubico: 0,
+            valor_troza: 0,
+            bosque_id: 0,
+            siembra_rebrote_id: 0,
+          }];
+          const modalEl = document.getElementById('detModal')!;
+          new bootstrap.Modal(modalEl).show();
+        }, err2 => {
+          console.error('Tampoco pude obtener count:', err2);
+          alert('No se pudo abrir el modal: error al obtener datos del corte.');
+        });
+      }
+    });
+  }
+
+  addRow() {
+    const lastTroza = this.nuevoDetCorte.length
+      ? this.nuevoDetCorte[this.nuevoDetCorte.length - 1].trozas
+      : 0;
+
+    this.nuevoDetCorte.push({
+      cabecera_corte_id: this.selectedCorteId!,
+      trozas: lastTroza + 1,
+      circ_bruta: 0,
+      circ_neta: 0,
+      largo_bruto: 0,
+      largo_neto: 0,
+      m_cubica: 0,
+      valor_mcubico: 0,
+      valor_troza: 0,
+      bosque_id: this.selectedBosqueId || 0,
+      siembra_rebrote_id: this.selectedSiembraId || 0,
+    });
+  }
+
+  removeRow(i: number) {
+    this.nuevoDetCorte.splice(i, 1);
+  }
+
+  onSaveDet() {
+    console.log('Guardando detalles:', this.nuevoDetCorte);
+    this.saveDetError = null;
+    if (this.selectedFile) {
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement | null;
+      this.uploadExcel(fileInput || undefined);
+    } else {
+      this.corteService.postDetalleCorte({ detalles: this.nuevoDetCorte }).subscribe(
+        response => {
+          console.log('Detalles guardados:', response);
+          const added = Array.isArray(response) ? response.length : this.nuevoDetCorte.length;
+          const corte = this.listCorte.find(c => c.id === this.selectedCorteId);
+          if (corte) {
+            // Actualiza ambos campos por seguridad
+            corte.detalle_cortes_count = (Number(corte.detalle_cortes_count) || 0) + added;
+            corte.cant_arboles = (Number(corte.cant_arboles) || 0) + added;
+          }
+          // 2) Refresca la lista filtrada para que Angular reevalúe los *ngIf
+          this.getCortesFiltrados();
+          this.selectedCorteId = null;
+          this.corteService.getValorTrozaAll2().subscribe(map => {
+            this.corteValorTroza = {};
+            Object.entries(map || {}).forEach(([k, v]) => {
+              this.corteValorTroza[Number(k)] = Number(v) || 0;
+            });
+
+            // (opcional) asegurar entradas por defecto para cortes cargados
+            (this.listCorte || []).forEach((c: any) => {
+              const id = Number(c.id);
+              if (this.corteValorTroza[id] === undefined) this.corteValorTroza[id] = 0;
+            });
+          }, err => {
+            console.error('No pude obtener valorTrozaAll:', err);
+          });
+          // cerrar modal manualmente (solo si éxito)
+          const modalEl = document.getElementById('detModal')!;
+          bootstrap.Modal.getInstance(modalEl)?.hide();
+          // limpiar error
+          this.saveDetError = null;
+        },
+        err => {
+          console.error('Error al guardar los detalles:', err);
+          let msg = 'Error al guardar los detalles';
+          if (err && err.status === 422) {
+            // tu backend devuelve { message: '...' } o { errors: {...} }
+            if (err.error) {
+              if (typeof err.error === 'string') {
+                msg = err.error;
+              } else if (err.error.message) {
+                msg = err.error.message;
+              } else if (err.error.errors) {
+                // compone mensaje desde array de errores
+                const vals = Object.values(err.error.errors)
+                  .flat()
+                  .map((v: any) => String(v));
+                msg = vals.join(' - ') || msg;
+              }
+            }
+          } else if (err && err.message) {
+            msg = err.message;
+          }
+
+          // muestra en la UI
+          this.saveDetError = msg;
+          setTimeout(() => this.saveDetError = null, 8000);
+
+          // opcional: desplazar scroll al top del modal para que se vea el alert
+          try {
+            const modalBody = document.querySelector('#detModal .modal-body') as HTMLElement | null;
+            if (modalBody) modalBody.scrollTop = 0;
+          } catch { }
+        }
+      );
+    }
+  }
+
+  onFileSelected(event: Event) {
+    const target = event.target as HTMLInputElement;
+    if (target.files && target.files.length > 0) {
+      this.selectedFile = target.files[0];
+      this.selectedFileName = this.selectedFile.name;
+    }
+  }
+
+  removeExcel(fileInput?: HTMLInputElement) {
+    // limpiar variable
+    this.selectedFile = null;
+    this.selectedFileName = null;
+
+    // resetear visualmente el input (esto hace que vuelva a aparecer "Escoger archivo")
+    if (fileInput) {
+      try {
+        fileInput.value = ''; // funciona en la mayoría de navegadores
+      } catch (e) {
+        // fallback: crear uno nuevo en el DOM (raramente necesario)
+        const newInput = fileInput.cloneNode(false) as HTMLInputElement;
+        fileInput.parentNode?.replaceChild(newInput, fileInput);
+      }
+    }
+  }
+
+  uploadExcel(fileInput?: HTMLInputElement) {
+    if (!this.selectedFile || !this.selectedCorteId) {
+      this.saveDetError = 'Falta archivo o cabecera seleccionada.';
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', this.selectedFile);
+    formData.append('cabecera_corte_id', String(this.selectedCorteId));
+    formData.append('bosque_id', String(this.selectedBosqueId));
+    formData.append('siembra_rebrote_id', String(this.selectedSiembraId));
+
+    this.isUploading = true;
+
+    this.corteService.postData(formData).subscribe({
+      next: (res: any) => {
+        console.log('Excel subido y procesado', res);
+        // limpiar input y estado
+        if (fileInput) {
+          try { fileInput.value = ''; fileInput.dispatchEvent(new Event('input', { bubbles: true })); }
+          catch { /* fallback no crítico */ }
+        } else {
+          this.removeExcel();
+        }
+        this.selectedFile = null;
+        this.selectedFileName = null;
+        this.isUploading = false;
+
+        const added = Number(res?.added_rows ?? 0);
+        const newCount = Number(res?.new_count ?? NaN);
+        const existingCount = Number(res?.existing_count ?? NaN);
+
+        const corte = this.listCorte.find(c => c.id === this.selectedCorteId);
+        if (corte) {
+          if (!isNaN(newCount)) {
+            corte.cant_arboles = newCount;
+          } else if (added > 0) {
+            corte.cant_arboles = (Number(corte.cant_arboles) || 0) + added;
+          }
+          if (!isNaN(added)) {
+            corte.detalle_cortes_count = (Number(corte.detalle_cortes_count) || 0) + added;
+          } else if (!isNaN(newCount)) {
+            corte.detalle_cortes_count = newCount;
+          }
+        }
+
+        // cerrar modal SOLO cuando la subida terminó con éxito
+        const modalEl = document.getElementById('detModal')!;
+        bootstrap.Modal.getInstance(modalEl)?.hide();
+
+        // refrescar datos en UI (llama a tu método existente)
+        this.getCortesFiltrados?.(); // o la función que recarga datos
+        this.corteService.getValorTrozaAll2().subscribe(map => {
+          this.corteValorTroza = {};
+          Object.entries(map || {}).forEach(([k, v]) => {
+            this.corteValorTroza[Number(k)] = Number(v) || 0;
+          });
+        });
+      },
+      error: (err) => {
+        console.error('Error al subir Excel', err);
+        this.isUploading = false;
+        // muestra error en UI
+        this.saveDetError = err?.error?.message || 'Error al subir el archivo';
+      }
+    });
+  }
+
+  async exportToPDF() {
+    // Helper: carga una imagen y devuelve dataURL (base64)
+    const loadImageAsDataURL = (url: string): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous'; // importante si la sirves desde otro origen
+        img.onload = () => {
+          // dibuja en canvas para obtener dataURL
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth || img.width;
+          canvas.height = img.naturalHeight || img.height;
+          const ctx = canvas.getContext('2d')!;
+          ctx.drawImage(img, 0, 0);
+          try {
+            const dataUrl = canvas.toDataURL('image/png');
+            resolve(dataUrl);
+          } catch (e) {
+            reject(e);
+          }
+        };
+        img.onerror = (err) => reject(err);
+        // ruta relativa al build -> angular sirve assets desde /assets/...
+        img.src = `/assets/images/bosque.png`;
+      });
+    };
+
+    const doc = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait' });
+    const pageSize = doc.internal.pageSize as any;
+    const pageWidth = pageSize.getWidth();
+    const pageHeight = pageSize.getHeight();
+
+    // Márgenes reducidos para aprovechar el ancho
+    const marginLeft = 20;
+    const marginRight = 20;
+    const usableWidth = pageWidth - marginLeft - marginRight;
+
+    const headerY = 60;
+    const margin = 40;
+    const username = this.username ?? 'Invitado';
+    const generatedAt = new Date().toLocaleString('es-ES');
+
+    // Prepara filas (asegura valores string)
+    const rows = this.cortesFiltrados.map(corte => ({
+      bosque: this.formatBosques(corte.bosque_id) || '',
+      contrato: ((this.getClienteId(this.getContratoId(corte.contrato_id)) || '') +
+        (this.getContratoAnio(this.getContratoId(corte.contrato_id)) ? (' - ' + this.getContratoAnio(this.getContratoId(corte.contrato_id))) : '')) || '',
+      raleoTipo: this.getRaleoId(corte.raleo_tipo_id) || '',
+      siembraRebrote: (this.formatSiembras(corte.siembra_rebrote_id) || ''),
+      //selloTipo: this.getSelloTipoId(corte.sello_id) || '',
+      fechaEmbarque: corte.fecha_embarque ? new Date(corte.fecha_embarque).toLocaleDateString('es-ES') : '',
+      cantArboles: corte.cant_arboles ?? '',
+      numeroViaje: corte.numero_viaje ?? '',
+      numeroEnvio: corte.numero_envio ?? ''
+    }));
+
+    const columns = [
+      { header: 'Bosque', dataKey: 'bosque' },
+      { header: 'Contrato', dataKey: 'contrato' },
+      { header: 'Raleo', dataKey: 'raleoTipo' },
+      { header: 'Siembra/Rebrote', dataKey: 'siembraRebrote' },
+      //{ header: 'Sello', dataKey: 'selloTipo' },
+      { header: 'Fecha', dataKey: 'fechaEmbarque' },
+      { header: 'Árboles', dataKey: 'cantArboles' },
+      { header: 'N° Viaje', dataKey: 'numeroViaje' },
+      { header: 'N° Envío', dataKey: 'numeroEnvio' }
+    ];
+
+    // Asignar anchos compactos que sumen usableWidth (ajusta si necesitas)
+    const columnWidths: Record<number, number> = {
+      0: 70,   // Bosque
+      1: 70,  // Contrato (mayor, permitirá wrap) 
+      2: 60,   // Raleo
+      3: 88,  // Siembra/Rebrote
+      //4: 50,   // Sello
+      4: 50,   // Fecha
+      5: 35,   // Árboles
+      6: 30,    // N° Viaje
+      7: 30    // N° Envío
+    };
+    // Si por alguna razón la suma difiere, auto-ajusta último ancho:
+    const totalAssigned = Object.values(columnWidths).reduce((a, b) => a + b, 0);
+    const diff = Math.round(usableWidth - totalAssigned);
+    if (diff !== 0) {
+      // añadir la diferencia a la columna contrato (índice 1)
+      columnWidths[1] = (columnWidths[1] || 100) + diff;
+    }
+
+    // Carga la imagen antes de dibujar el header/tablas
+    let logoDataUrl: string | null = null;
+    try {
+      logoDataUrl = await loadImageAsDataURL('/assets/images/bosque.png');
+    } catch (e) {
+      console.warn('No se pudo cargar logo para el PDF:', e);
+      logoDataUrl = null;
+    }
+
+    // Header/footer dibujados en cada página
+    const drawHeader = (data: any) => {
+      if (logoDataUrl) {
+        // calcular tamaño deseado (p. ej. ancho 60pt)
+        const desiredWidth = 60;
+        // reconstruir tamaño manteniendo proporción: extrae info del dataURL
+        const img = new Image();
+        img.src = logoDataUrl;
+        // Usamos proporción aproximada - si quieres seguridad, podrías calcular con img.naturalWidth/naturalHeight después de load
+        const ratio = (img.naturalHeight && img.naturalWidth) ? (img.naturalHeight / img.naturalWidth) : 0.5;
+        const desiredHeight = ratio ? desiredWidth * ratio : 30;
+        // coloca logo a la izquierda, un poco arriba
+        doc.addImage(logoDataUrl, 'PNG', marginLeft, 8, desiredWidth, desiredHeight);
+        // desplaza texto del título a la derecha si hace falta
+      }
+
+      // Título
+      doc.setFontSize(12);
+      doc.setFont('bold');
+      doc.text('Reporte de Cortes', marginLeft, 50);
+
+      // Info a la derecha (fecha + usuario)
+      doc.setFontSize(8);
+      doc.setFont('normal');
+      const gen = ` ${generatedAt}`;
+      const usr = ` ${username}`;
+      doc.text(gen, pageWidth - marginRight - doc.getTextWidth(gen), 14);
+      doc.text(usr, pageWidth - marginRight - doc.getTextWidth(usr), 28);
+
+      // Línea divisoria
+      doc.setDrawColor(200);
+      doc.setLineWidth(0.5);
+      doc.line(marginLeft, headerY, pageWidth - marginRight, headerY);
+    };
+
+    // Construye body como array de arrays (autoTable fácil)
+    const body = rows.map(r => columns.map((c) => (r as any)[c.dataKey]));
+
+    autoTable(doc, {
+      startY: headerY + 22,
+      head: [columns.map(c => c.header)],
+      body: body,
+      margin: { left: marginLeft, right: marginRight, top: headerY + 6 },
+      styles: {
+        fontSize: 10,
+        cellPadding: 3,
+        overflow: 'linebreak', // wrapping
+        halign: 'right',
+        valign: 'middle',
+      },
+      headStyles: { fillColor: [34, 139, 34], textColor: 255, halign: 'center' },
+      tableWidth: usableWidth,
+
+      columnStyles: {
+        // indices: 0 Bosque, 1 Contrato, 2 Raleo, 3 Siembra/Rebrote, 4 Sello, 5 Fecha, 6 Árboles, 7 N° Viaje
+        0: { cellWidth: columnWidths[0], halign: 'left' },
+        1: { cellWidth: columnWidths[1], halign: 'left' }, // <- CONTRATO a la derecha
+        2: { cellWidth: columnWidths[2], halign: 'left' },
+        3: { cellWidth: columnWidths[3], halign: 'left' },
+        //4: { cellWidth: columnWidths[4], halign: 'left' },
+        4: { cellWidth: columnWidths[5], halign: 'left' },
+        5: { cellWidth: columnWidths[6], halign: 'right' }, // opcional: números a la derecha
+        6: { cellWidth: columnWidths[7], halign: 'right' },  // opcional: números a la derecha
+        7: { cellWidth: columnWidths[8], halign: 'right' }
+      },
+      didDrawPage: (data) => {
+        // número de página actual que te da autoTable
+        const page = data.pageNumber;
+        const pageText = `Página ${page}`;
+        const footerText = ` `;
+
+        // footer a la derecha y texto a la izquierda
+        doc.setFontSize(9);
+        doc.text(pageText, pageWidth - margin - doc.getTextWidth(pageText), pageHeight - 20);
+        doc.text(footerText, margin, pageHeight - 20);
+
+        // (si quieres header por página, también lo dibujas aquí)
+        drawHeader(data);
+      },
+      showHead: 'everyPage'
+    });
+    const filename = `reporte_cortes.pdf`;
+    doc.save(filename);
+  }
+
+  async exportToPDF2() {
+    if (!this.selectedCorteId) {
+      alert('No hay corte seleccionado para exportar.');
+      return;
+    }
+
+    const corte = this.listCorte.find((c: any) => c.id === this.selectedCorteId);
+    if (!corte) {
+      alert('No se encontró la información del corte seleccionado.');
+      return;
+    }
+
+    const fmtCurrency = (v: any) => {
+      const n = Number(v) || 0;
+      try {
+        const abs = Math.abs(n);
+        const formatted = new Intl.NumberFormat('es-ES', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        }).format(abs);
+        // signo negativo antes del $ si aplica
+        return (n < 0 ? '-$' : '$') + formatted;
+      } catch {
+        return (n < 0 ? '-$' : '$') + Math.abs(n).toFixed(2);
+      }
+    };
+
+    const fmtNumber = (v: any, min = 0, max = 4) => {
+      const n = Number(v) || 0;
+      try {
+        return new Intl.NumberFormat('es-ES', { minimumFractionDigits: min, maximumFractionDigits: max }).format(n);
+      } catch {
+        return n.toFixed(max);
+      }
+    };
+    const fmtDate = (d: any) => d ? new Date(d).toLocaleDateString('es-ES') : '';
+
+    // Helper: carga una imagen y devuelve dataURL (base64)
+    const loadImageAsDataURL = (url: string): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous'; // importante si la sirves desde otro origen
+        img.onload = () => {
+          // dibuja en canvas para obtener dataURL
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth || img.width;
+          canvas.height = img.naturalHeight || img.height;
+          const ctx = canvas.getContext('2d')!;
+          ctx.drawImage(img, 0, 0);
+          try {
+            const dataUrl = canvas.toDataURL('image/png');
+            resolve(dataUrl);
+          } catch (e) {
+            reject(e);
+          }
+        };
+        img.onerror = (err) => reject(err);
+        // ruta relativa al build -> angular sirve assets desde /assets/...
+        img.src = `/assets/images/bosque.png`;
+      });
+    };
+
+    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+    const pageSize = doc.internal.pageSize as any;
+    const pageWidth = pageSize.getWidth();
+    const pageHeight = pageSize.getHeight();
+
+    const margin = 40;
+    const marginLeft = 35;
+
+    // Header/foot layout
+    const headerTop = 60;        // y inicial del header
+    const lineHeight = 10;      // separación compacta
+    const headerHeight = headerTop + lineHeight * 3 + 8; // reservar espacio para header
+
+    const topMargin = headerHeight + 10;
+
+    const title = `Corte - ID ${corte.id}`;
+    const subtitle = `${this.getClienteId(this.getContratoId(corte.contrato_id)) || ''}` +
+      (this.getContratoAnio(this.getContratoId(corte.contrato_id)) ? (' - ' + this.getContratoAnio(this.getContratoId(corte.contrato_id))) : '');
+    const generatedAt = ` ${new Date().toLocaleString('es-ES')}`;
+    const usuarioTexto = ` ${this.username ?? 'Invitado'}`;
+
+    // guardamos páginas en las que ya dibujamos el header para evitar duplicados
+    const drawnPages = new Set<number>();
+
+    // Carga la imagen antes de dibujar el header/tablas
+    let logoDataUrl: string | null = null;
+    try {
+      logoDataUrl = await loadImageAsDataURL('/assets/images/bosque.png');
+    } catch (e) {
+      console.warn('No se pudo cargar logo para el PDF:', e);
+      logoDataUrl = null;
+    }
+    const drawHeader = (data?: any) => {
+      if (logoDataUrl) {
+        // calcular tamaño deseado (p. ej. ancho 60pt)
+        const desiredWidth = 60;
+        // reconstruir tamaño manteniendo proporción: extrae info del dataURL
+        const img = new Image();
+        img.src = logoDataUrl;
+        // Usamos proporción aproximada - si quieres seguridad, podrías calcular con img.naturalWidth/naturalHeight después de load
+        const ratio = (img.naturalHeight && img.naturalWidth) ? (img.naturalHeight / img.naturalWidth) : 0.5;
+        const desiredHeight = ratio ? desiredWidth * ratio : 30;
+        // coloca logo a la izquierda, un poco arriba
+        doc.addImage(logoDataUrl, 'PNG', marginLeft, 8, desiredWidth, desiredHeight);
+        // desplaza texto del título a la derecha si hace falta
+      }
+
+      // determinar número de página (autoTable pasa data.pageNumber)
+      const pageNumber = (data && data.pageNumber) ? data.pageNumber : ((doc as any).internal?.getNumberOfPages ? (doc as any).internal.getNumberOfPages() : 1);
+      if (drawnPages.has(pageNumber)) return; // ya dibujado en esta página
+
+      // dibujar header compacto
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'bold');
+      doc.text(title, margin, headerTop);
+
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      const wSub = doc.getTextWidth(subtitle);
+      if (wSub < pageWidth - margin * 2) {
+        doc.text(subtitle, pageWidth - margin - wSub, headerTop);
+      } else {
+        doc.text(subtitle, margin, headerTop + lineHeight);
+      }
+
+      const genY = headerTop + lineHeight;
+      const usrY = genY + lineHeight;
+      const genW = doc.getTextWidth(generatedAt);
+      const usrW = doc.getTextWidth(usuarioTexto);
+      doc.text(generatedAt, pageWidth - margin - genW, genY);
+      doc.text(usuarioTexto, pageWidth - margin - usrW, usrY);
+
+      // separador
+      doc.setDrawColor(200);
+      doc.setLineWidth(0.5);
+      doc.line(margin, usrY + 6, pageWidth - margin, usrY + 6);
+
+      drawnPages.add(pageNumber); // marcar como dibujado
+    };
+
+    const cabeceraRows = [
+      ['Bosque', this.formatBosques(corte.bosque_id)],
+      ['Contrato', this.getClienteId(this.getContratoId(corte.contrato_id)) || ''],
+      ['Raleo Tipo', this.getRaleoId(corte.raleo_tipo_id) || ''],
+      ['Siembra/Rebrote', this.formatSiembras(corte.siembra_rebrote_id)],
+      //['Año Siembra/Rebrote', this.getSiemRebAnio(corte.siembra_rebrote_id) || ''],
+      //['Sello Tipo', this.getSelloTipoId(corte.sello_id) || ''],
+      ['Fecha Embarque', fmtDate(corte.fecha_embarque) || ''],
+      ['Cantidad Árboles', corte.cant_arboles ?? ''],
+      ['Número de Viaje', corte.numero_viaje ?? ''],
+      ['Número de Envío', corte.numero_envio ?? ''],
+      ['Total detalles', (this.listDetCortes || []).length.toString()]
+    ];
+
+    const detalleRows = (this.listDetCortes || []).map(det => ([
+      det.trozas ?? '',
+      fmtNumber(det.circ_bruta ?? '', 0, 2),
+      fmtNumber(det.circ_neta ?? '', 0, 2),
+      fmtNumber(det.largo_bruto ?? '', 2, 2),
+      fmtNumber(det.largo_neto ?? '', 2, 2),
+      fmtNumber(det.m_cubica ?? '', 4, 4),
+      fmtCurrency(det.valor_mcubico),
+      fmtCurrency(det.valor_troza)
+    ]));
+
+    const footRow = [
+      `TOTAL:`,
+      fmtNumber(this.totalCircBruta || 0, 0, 2),
+      fmtNumber(this.totalCircNeta || 0, 0, 2),
+      fmtNumber(this.totalLargoBruto || 0, 2, 2),
+      fmtNumber(this.totalLargoNeto || 0, 2, 2),
+      fmtNumber(this.totalMCubica || 0, 4, 4),
+      'TOTAL:',
+      // fmtCurrency(this.totalValorMCubico || 0),
+      fmtCurrency(this.totalValorTroza || 0)
+    ];
+
+    // (IMPORTANTE) dibujamos el header para la página 1 antes de las tablas
+    drawHeader({ pageNumber: 1 });
+
+    // tabla de cabecera (campo/valor)
+    autoTable(doc, {
+      startY: headerHeight + 6,
+      margin: { top: topMargin },
+      body: cabeceraRows,
+      theme: 'grid',
+      styles: { fontSize: 10, cellPadding: 6 },
+      headStyles: { fillColor: [34, 139, 34], textColor: 255, halign: 'center' },
+      columnStyles: {
+        0: { cellWidth: 120, halign: 'left', fontStyle: 'bold' },
+        1: { halign: 'left' }
+      },
+      didDrawPage: (data) => {
+        // se ejecutará en cada página que autoTable necesite para esta tabla,
+        // drawHeader se encargará de evitar duplicados.
+        drawHeader(data);
+      }
+    });
+
+    const afterHeaderY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY + 12 : headerHeight + 60;
+
+    // multi-head + detalle (SIN foot)
+    const multiHead = [
+      ['TROZAS', 'CIRCUNFERENCIA', '', 'LARGO', '', 'M³', '', 'VALOR', ''],
+      ['', 'BRUTA', 'NETA', 'BRUTO', 'NETO', '', 'M³', 'TROZA']
+    ];
+
+    // MAIN table (sin foot)
+    autoTable(doc, {
+      startY: afterHeaderY,
+      margin: { top: topMargin },
+      head: multiHead,
+      body: detalleRows,
+      theme: 'striped',
+      styles: { fontSize: 9, cellPadding: 5 },
+      headStyles: { fillColor: [34, 139, 34], textColor: 255 },
+      columnStyles: {
+        0: { halign: 'center', cellWidth: 50 },
+        1: { halign: 'right', cellWidth: 60 },
+        2: { halign: 'right', cellWidth: 60 },
+        3: { halign: 'right', cellWidth: 70 },
+        4: { halign: 'right', cellWidth: 70 },
+        5: { halign: 'right', cellWidth: 50 },
+        6: { halign: 'right', cellWidth: 80 },
+        7: { halign: 'right', cellWidth: 80 }
+      },
+      didParseCell: (data) => {
+        if (data.section === 'head' && data.row.index === 0) {
+          if (data.column.index === 1 || data.column.index === 3) {
+            data.cell.colSpan = 2;
+            data.cell.styles.halign = 'center';
+          }
+        }
+        if (data.section === 'head' && data.row.index === 1) {
+          data.cell.styles.halign = 'center';
+        }
+      },
+      didDrawPage: (data) => {
+        // footer y header por página; drawHeader evita duplicados
+        const page = data.pageNumber;
+        const pageText = `Página ${page}`;
+        const footerText = ` `;
+
+        doc.setFontSize(9);
+        // Espaciado extra debajo del footer (por ejemplo, 10pt)
+        const footerY = pageHeight - 10;
+        doc.text(pageText, pageWidth - margin - doc.getTextWidth(pageText), footerY);
+        doc.text(footerText, margin, footerY);
+
+        drawHeader(data);
+      },
+      showHead: 'everyPage'
+    });
+
+    // --- AÑADIMOS la fila de totales SOLO en la última página ---
+    const lastTable = (doc as any).lastAutoTable;
+    const lastY = lastTable ? lastTable.finalY : (pageHeight - 60);
+    const lastPage = (doc as any).internal.getNumberOfPages ? (doc as any).internal.getNumberOfPages() : 1;
+
+    // ir a la última página
+    doc.setPage(lastPage);
+
+    // decidir startY para el total; si no cabe en la página actual, añadimos página
+    let footStartY = lastY + 10;
+    const neededHeight = 20 + 10; // aproximado alto de la fila de totales
+    if (footStartY + neededHeight > pageHeight - 30) {
+      doc.addPage();
+      // marcar header de la nueva página y dibujarlo
+      const newPageNum = (doc as any).internal.getNumberOfPages();
+      drawHeader({ pageNumber: newPageNum });
+      footStartY = margin;
+      doc.setPage(newPageNum);
+    }
+
+    // dibujar la fila de totales como una mini tabla (una sola fila)
+    autoTable(doc, {
+      startY: footStartY,
+      body: [footRow],
+      theme: 'grid',
+      styles: { fontSize: 9, cellPadding: 5 },
+      columnStyles: {
+        0: { halign: 'left', cellWidth: 50 },
+        1: { halign: 'right', cellWidth: 60 },
+        2: { halign: 'right', cellWidth: 60 },
+        3: { halign: 'right', cellWidth: 70 },
+        4: { halign: 'right', cellWidth: 70 },
+        5: { halign: 'right', cellWidth: 50 },
+        6: { halign: 'right', cellWidth: 80 },
+        7: { halign: 'right', cellWidth: 80 }
+      },
+      headStyles: { fillColor: [220, 220, 220], textColor: 50 },
+      footStyles: { fillColor: [220, 220, 220], textColor: 50, fontStyle: 'bold' },
+      showHead: 'never',
+      didDrawPage: (data) => {
+        // footer para la página de totales
+        const page = data.pageNumber;
+        const pageText = `Página ${page}`;
+        const footerText = ` `;
+        doc.setFontSize(9);
+        //doc.text(pageText, pageWidth - margin - doc.getTextWidth(pageText), pageHeight - 20);
+        //doc.text(footerText, margin, pageHeight - 20);
+        drawHeader(data); // por si añadido página nueva (drawHeader controla duplicados)
+      }
+    });
+    const filename = `corte_${corte.id}_detalles.pdf`;
+    doc.save(filename);
+  }
+
+  formatBosques(val: any): string {
+    if (!val) return '';
+    if (Array.isArray(val)) {
+      return val.map(id => this.getBosqueId(id)).join(', ');
+    }
+    return this.getBosqueId(val);
+  }
+
+  formatSiembras(val: any): string {
+    if (!val) return '';
+    if (Array.isArray(val)) {
+      return val.map(id => {
+        const tipo = this.getSiemRebTipo(this.getSiemRebId(id));
+        const anio = this.getSiemRebAnio(id);
+        return `${tipo}${anio ? ' - ' + anio : ''}`;
+      }).join(', ');
+    }
+    const tipo = this.getSiemRebTipo(this.getSiemRebId(val));
+    const anio = this.getSiemRebAnio(val);
+    return `${tipo}${anio ? ' - ' + anio : ''}`;
+  }
+}
+
+
